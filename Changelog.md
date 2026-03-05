@@ -1,3 +1,7 @@
+## v13.351.5.1 - 2026-03-05
+
+- Fixed dnd5e `Exhaustion` / `Concentration` handling when clicking or right-clicking wrapper-based filtered rows by forwarding wrapper interactions to the native inner control.
+
 ## v13.351.5 - 2026-03-05
 
 - Status HUD now supports module-injected temporary/custom effects in a system-agnostic way.

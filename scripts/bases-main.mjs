@@ -8,7 +8,9 @@ Hooks.once('ready', basesReady);
 let hudMutationObserver = null;
 let hudObservedHost = null;
 let pendingFilterRefocusUntil = 0;
+let pendingFilterRefocusTimer = null;
 const FILTER_FOCUS_RETRY_MS = [0, 30, 90];
+const FILTER_REFOCUS_SETTLE_MS = 120;
 
 function markHudSystemClass(hudRoot = document.querySelector('#token-hud')) {
 	if (!hudRoot) return;
@@ -58,11 +60,34 @@ function getFirstVisibleHudEffect(host) {
 	return collectHudStatusElements(host).find((el) => !el.classList.contains('bases-hidden')) ?? null;
 }
 
+function liftToHostChild(host, element) {
+	if (!host || !element) return null;
+	if (element.parentElement === host) return element;
+	let current = element.parentElement;
+	while (current && current !== host) {
+		if (current.parentElement === host) return current;
+		current = current.parentElement;
+	}
+	return null;
+}
+
 function focusFilterInput(palette = undefined) {
-	const openPalette = palette ?? findStatusPalette(canvas?.hud?.token?.element) ?? findStatusPalette(document.querySelector('#token-hud'));
-	const input =
-		openPalette?.querySelector?.(':scope > fieldset.bases-filter .bases-filter-input') ??
-		document.querySelector('#token-hud fieldset.bases-filter .bases-filter-input');
+	const candidates = [];
+	if (palette?.isConnected) candidates.push(palette);
+	const canvasPalette = findStatusPalette(canvas?.hud?.token?.element);
+	if (canvasPalette?.isConnected) candidates.push(canvasPalette);
+	const domPalette = findStatusPalette(document.querySelector('#token-hud'));
+	if (domPalette?.isConnected) candidates.push(domPalette);
+
+	let input = null;
+	for (const candidate of candidates) {
+		const found = candidate?.querySelector?.(':scope > fieldset.bases-filter .bases-filter-input');
+		if (found?.isConnected) {
+			input = found;
+			break;
+		}
+	}
+	input ??= document.querySelector('#token-hud fieldset.bases-filter .bases-filter-input');
 	if (!input) return false;
 	input.focus({ preventScroll: true });
 	const end = input.value?.length ?? 0;
@@ -80,7 +105,24 @@ function queueFilterRefocusIfFiltering() {
 	if (!game.settings.get(Constants.MODULE_ID, 'hudFilterEnabled')) return;
 	if (!hasActiveFilterValue()) return;
 	// Keep this short-lived so we do not steal focus on unrelated later renders.
-	pendingFilterRefocusUntil = Date.now() + 2000;
+	pendingFilterRefocusUntil = Date.now() + 2500;
+}
+
+function schedulePendingFilterRefocusAfterSettle() {
+	if (!game.settings.get(Constants.MODULE_ID, 'hudFilterEnabled')) return;
+	if (pendingFilterRefocusUntil <= Date.now()) {
+		pendingFilterRefocusUntil = 0;
+		if (pendingFilterRefocusTimer) clearTimeout(pendingFilterRefocusTimer);
+		pendingFilterRefocusTimer = null;
+		return;
+	}
+
+	if (pendingFilterRefocusTimer) clearTimeout(pendingFilterRefocusTimer);
+	pendingFilterRefocusTimer = setTimeout(() => {
+		pendingFilterRefocusTimer = null;
+		if (pendingFilterRefocusUntil <= Date.now()) return;
+		focusFilterInput();
+	}, FILTER_REFOCUS_SETTLE_MS);
 }
 
 function closeStatusPaletteIfOpen() {
@@ -108,19 +150,8 @@ function collectStatusElements(palette) {
 	);
 	const lifted = new Map();
 
-	const liftToHostChild = (el) => {
-		if (!el) return null;
-		if (el.parentElement === host) return el;
-		let current = el.parentElement;
-		while (current && current !== host) {
-			if (current.parentElement === host) return current;
-			current = current.parentElement;
-		}
-		return el;
-	};
-
 	for (const src of sourceNodes) {
-		const node = liftToHostChild(src);
+		const node = liftToHostChild(host, src) ?? src;
 		if (!node) continue;
 		if (!lifted.has(node)) {
 			lifted.set(node, src);
@@ -289,7 +320,10 @@ function ensureHudFilterUI(palette, enabled) {
 		if (!firstVisible) return;
 
 		queueFilterRefocusIfFiltering();
-		firstVisible.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true }));
+		const control = firstVisible.querySelector(
+			':scope > .effect-control, :scope > [data-status-id], :scope > [data-effect-id], :scope > [data-effect-uuid], :scope > img.effect-control, :scope > img',
+		);
+		(control ?? firstVisible).dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true }));
 	});
 	clear?.addEventListener('click', (event) => {
 		event.preventDefault();
@@ -705,13 +739,31 @@ function decorateStatusElement(element) {
 	p.textContent = text;
 }
 
+function findHudStatusInteractionTarget(event) {
+	const source = event.target;
+	if (!(source instanceof Element)) return null;
+	const rawTarget = source.closest(
+		'.effect-control, .bases-effect-control, .bases-effect-proxy, [data-status-id], [data-effect-id], [data-effect-uuid]',
+	);
+	if (!rawTarget) return null;
+
+	const hudRoot = source.closest('#token-hud') ?? canvas?.hud?.token?.element ?? document.querySelector('#token-hud');
+	const palette = findStatusPalette(hudRoot);
+	const host = getHost(palette);
+	if (!host || !host.contains(rawTarget)) return null;
+
+	const target = liftToHostChild(host, rawTarget) ?? rawTarget;
+	if (!isHudStatusElement(target)) return null;
+	return target;
+}
+
 function onTokenHudClick(event) {
-	const target = event.target?.closest?.('.effect-control, .bases-effect-control, .bases-effect-proxy');
-	if (!target?.classList?.contains('effect-control')) return;
-	queueFilterRefocusIfFiltering();
+	const target = findHudStatusInteractionTarget(event);
+	if (!target) return;
+	if (event.isTrusted) queueFilterRefocusIfFiltering();
 
 	const id = getStatusId(target);
-	if (!id && (target.classList.contains('bases-effect-control') || target.classList.contains('bases-effect-proxy'))) {
+	if (target.classList.contains('bases-effect-control') || target.classList.contains('bases-effect-proxy')) {
 		const icon = target.querySelector(
 			':scope > .effect-control, :scope > [data-status-id], :scope > [data-effect-id], :scope > [data-effect-uuid], :scope > img.effect-control, :scope > img',
 		);
@@ -731,9 +783,11 @@ function onTokenHudClick(event) {
 					metaKey: event.metaKey,
 				}),
 			);
+			return;
 		}
-		return;
 	}
+
+	if (!target.classList?.contains('effect-control')) return;
 
 	if (game.system.id !== 'dnd5e') return;
 	if (id !== 'exhaustion' && id !== 'concentrating') return;
@@ -766,6 +820,7 @@ function ensureHudMutationObserver(palette) {
 	const reconcile = foundry.utils.debounce(() => {
 		if (!palette?.isConnected || !host?.isConnected) return;
 		rebuildAndApply(palette);
+		schedulePendingFilterRefocusAfterSettle();
 	}, 35);
 	hudMutationObserver = new MutationObserver((mutations) => {
 		if (host.dataset.basesReconciling === '1' || host.dataset.basesSkipObserver === '1') return;
@@ -890,10 +945,5 @@ function statusesRenderTokenHUDHook(app, html) {
 	ensureHudMutationObserver(palette);
 
 	const filterEnabled = game.settings.get(Constants.MODULE_ID, 'hudFilterEnabled');
-	if (filterEnabled && pendingFilterRefocusUntil > Date.now()) {
-		pendingFilterRefocusUntil = 0;
-		setTimeout(() => {
-			focusFilterInput(palette);
-		}, 30);
-	}
+	if (filterEnabled) schedulePendingFilterRefocusAfterSettle();
 }
