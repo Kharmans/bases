@@ -210,7 +210,8 @@ function normalizeStatusLabel(raw = '') {
 }
 
 function normalizeFilterText(raw = '') {
-	return normalizeStatusLabel(String(raw)).trim().replace(/\s+/g, ' ').toLowerCase();
+	const base = foundry.applications.ux.SearchFilter.cleanQuery(String(raw ?? ''));
+	return normalizeStatusLabel(base).replace(/\s+/g, ' ').toLowerCase();
 }
 
 function getEffectSearchText(el) {
@@ -246,6 +247,10 @@ function syncHudFilterClearState(fieldset, input, clear) {
 function ensureHudFilterUI(palette, enabled) {
 	const existing = palette.querySelector(':scope > fieldset.bases-filter');
 	if (!enabled) {
+		if (existing) {
+			existing._basesSearchFilter?.unbind?.();
+			delete existing._basesSearchFilter;
+		}
 		existing?.remove();
 		palette.dataset.basesFilterValue = '';
 		const host = getHost(palette);
@@ -274,33 +279,43 @@ function ensureHudFilterUI(palette, enabled) {
 
 	const input = fieldset.querySelector('.bases-filter-input');
 	const clear = fieldset.querySelector('.bases-filter-clear');
+	const host = getHost(palette);
 	if (input) input.value = palette.dataset.basesFilterValue ?? input.value ?? '';
 	syncHudFilterClearState(fieldset, input, clear);
+	const applyFilterNow = (value = '') => {
+		if (!input) return;
+		input.value = value;
+		palette.dataset.basesFilterValue = value;
+		applyHudFilter(host, value);
+		syncHudFilterClearState(fieldset, input, clear);
+	};
 
 	if (fieldset.dataset.basesBound === '1') return fieldset;
 	fieldset.dataset.basesBound = '1';
 
-	const host = getHost(palette);
-
-	const run = foundry.utils.debounce(() => {
-		const value = input?.value ?? '';
-		palette.dataset.basesFilterValue = value;
-		applyHudFilter(host, value);
-	}, 25);
-
-	input?.addEventListener('input', () => {
-		syncHudFilterClearState(fieldset, input, clear);
-		run();
+	if (!input) return fieldset;
+	const SearchFilter = foundry.applications.ux.SearchFilter;
+	const search = new SearchFilter({
+		inputSelector: '.bases-filter-input',
+		contentSelector: '',
+		initial: input.value ?? '',
+		delay: 25,
+		callback: (_event, query) => {
+			palette.dataset.basesFilterValue = query;
+			applyHudFilter(host, query);
+			syncHudFilterClearState(fieldset, input, clear);
+		},
 	});
+	search.bind(fieldset);
+	fieldset._basesSearchFilter = search;
+
 	input?.addEventListener('keydown', (event) => {
 		if (event.key === 'Escape') {
 			event.preventDefault();
 			event.stopPropagation();
 			if (input.value) {
-				input.value = '';
-				palette.dataset.basesFilterValue = '';
-				applyHudFilter(host, '');
-				syncHudFilterClearState(fieldset, input, clear);
+				applyFilterNow('');
+				fieldset._basesSearchFilter?.filter?.(null, '');
 			} else {
 				closeStatusPaletteIfOpen();
 			}
@@ -313,8 +328,9 @@ function ensureHudFilterUI(palette, enabled) {
 		event.preventDefault();
 		event.stopPropagation();
 
-		palette.dataset.basesFilterValue = input.value;
-		applyHudFilter(host, input.value);
+		// Apply latest typed value before triggering first visible match.
+		applyFilterNow(input.value);
+		fieldset._basesSearchFilter?.filter?.(null, input.value);
 
 		const firstVisible = getFirstVisibleHudEffect(host);
 		if (!firstVisible) return;
@@ -329,10 +345,8 @@ function ensureHudFilterUI(palette, enabled) {
 		event.preventDefault();
 		event.stopPropagation();
 		if (!input) return;
-		input.value = '';
-		palette.dataset.basesFilterValue = '';
-		applyHudFilter(host, '');
-		syncHudFilterClearState(fieldset, input, clear);
+		applyFilterNow('');
+		fieldset._basesSearchFilter?.filter?.(null, '');
 		input.focus({ preventScroll: true });
 	});
 

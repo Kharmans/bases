@@ -1,3 +1,7 @@
+## v13.351.5.2 - 2026-03-06
+
+- Ported BM5E's Foundry `SearchFilter`-based Status HUD filtering flow into BASES, including clean-query normalization and bound filter lifecycle handling.
+
 ## v13.351.5.1 - 2026-03-05
 
 - Fixed dnd5e `Exhaustion` / `Concentration` handling when clicking or right-clicking wrapper-based filtered rows by forwarding wrapper interactions to the native inner control.
