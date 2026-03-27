@@ -1,3 +1,7 @@
+## v13.351.5.4 - 2026-03-27
+
+- Added Polish translation by [Lioheart](<https://github.com/Lioheart>) 🤗
+
 ## v13.351.5.3 - 2026-03-18
 
 - Fix for attribute bar 1 being misplaced!
